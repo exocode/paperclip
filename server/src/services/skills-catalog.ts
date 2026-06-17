@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -20,42 +20,64 @@ interface CatalogManifestFile {
 }
 
 const serviceDir = path.dirname(fileURLToPath(import.meta.url));
-const repoRoot = path.resolve(serviceDir, "../../..");
-const catalogPackageRoot = path.join(repoRoot, "packages/skills-catalog");
-const catalogManifestPath = path.join(catalogPackageRoot, "generated/catalog.json");
+const catalogPackageRootCandidates = buildCatalogPackageRootCandidates();
+let catalogPackageRoot = catalogPackageRootCandidates[0]!;
+let catalogManifestPath = path.join(catalogPackageRoot, "generated/catalog.json");
 let cachedCatalogManifest: {
   manifest: CatalogManifestFile;
+  manifestPath: string;
   mtimeMs: number;
   size: number;
 } | null = null;
 
-function loadCatalogManifest(): CatalogManifestFile {
-  if (!existsSync(catalogManifestPath)) {
-    throw new Error(
-      `Skills catalog manifest not found at ${catalogManifestPath}. Run pnpm --filter @paperclipai/skills-catalog build:manifest.`,
-    );
+function buildCatalogPackageRootCandidates() {
+  const configuredRoot = process.env.PAPERCLIP_SKILLS_CATALOG_DIR?.trim();
+  const candidates = [
+    ...(configuredRoot ? [path.resolve(configuredRoot)] : []),
+    path.resolve(process.cwd(), "packages/skills-catalog"),
+    path.resolve(serviceDir, "../../..", "packages/skills-catalog"),
+  ];
+  return Array.from(new Set(candidates));
+}
+
+function statCatalogManifest() {
+  for (const candidateRoot of catalogPackageRootCandidates) {
+    const candidateManifestPath = path.join(candidateRoot, "generated/catalog.json");
+    try {
+      const stats = statSync(candidateManifestPath);
+      catalogPackageRoot = candidateRoot;
+      catalogManifestPath = candidateManifestPath;
+      return { stats, manifestPath: candidateManifestPath };
+    } catch {
+      // Try the next known runtime layout before falling back.
+    }
   }
-  return JSON.parse(readFileSync(catalogManifestPath, "utf8")) as CatalogManifestFile;
+  return null;
+}
+
+function loadCatalogManifest(manifestPath: string): CatalogManifestFile {
+  return JSON.parse(readFileSync(manifestPath, "utf8")) as CatalogManifestFile;
 }
 
 function getCatalogManifest() {
-  if (!existsSync(catalogManifestPath)) {
-    throw new Error(
-      `Skills catalog manifest not found at ${catalogManifestPath}. Run pnpm --filter @paperclipai/skills-catalog build:manifest.`,
-    );
+  const manifestInfo = statCatalogManifest();
+  if (!manifestInfo) {
+    return null;
   }
-  const stats = statSync(catalogManifestPath);
+  const { stats, manifestPath } = manifestInfo;
   if (
     cachedCatalogManifest &&
+    cachedCatalogManifest.manifestPath === manifestPath &&
     cachedCatalogManifest.mtimeMs === stats.mtimeMs &&
     cachedCatalogManifest.size === stats.size
   ) {
     return cachedCatalogManifest.manifest;
   }
 
-  const manifest = loadCatalogManifest();
+  const manifest = loadCatalogManifest(manifestPath);
   cachedCatalogManifest = {
     manifest,
+    manifestPath,
     mtimeMs: stats.mtimeMs,
     size: stats.size,
   };
@@ -64,6 +86,9 @@ function getCatalogManifest() {
 
 function getCatalogSkills() {
   const catalogManifest = getCatalogManifest();
+  if (!catalogManifest) {
+    return [];
+  }
   return catalogManifest.skills.map((skill) => ({
     ...skill,
     packageName: catalogManifest.packageName,

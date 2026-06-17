@@ -101,6 +101,17 @@ describe("skills catalog service", () => {
     });
   });
 
+  it("returns an empty catalog when the generated manifest is missing", async () => {
+    mockStatSync.mockImplementation(() => {
+      throw new Error("missing");
+    });
+    const service = await import("../services/skills-catalog.js");
+
+    expect(service.listCatalogSkills()).toEqual([]);
+    expect(service.resolveCatalogSkillReference("anything")).toEqual({ skill: null, ambiguous: false });
+    expect(() => service.getCatalogPackageMetadata()).toThrow();
+  });
+
   it("rejects catalog asset previews without decoding bytes as utf8", async () => {
     const imageSkill = catalogSkill("with-image", "With Image");
     imageSkill.files = [
